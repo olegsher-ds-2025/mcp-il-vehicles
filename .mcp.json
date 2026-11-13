@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "il-vehicles": { "command": "mcp-il-vehicles" }
+  }
+}
