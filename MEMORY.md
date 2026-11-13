@@ -2,7 +2,7 @@
 
 ## Status (2026-11-13)
 - v0.1.0 built and tested against live data.gov.il; repo https://github.com/olegsher-ds-2025/mcp-il-vehicles
-- Not yet deployed to Horizon, not yet listed in registries
+- PyPI + MCP Registry publishing via GitHub Actions on tag v*; Horizon free tier is private-only (public needs paid plan) → self-host on laptop 10.0.0.100 via Cloudflare Tunnel (mcp-il-deploy)
 
 ## Next tasks
 1. Deploy to Prefect Horizon; add hosted URL to README

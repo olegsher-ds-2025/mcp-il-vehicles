@@ -1,5 +1,7 @@
 # mcp-il-vehicles
 
+<!-- mcp-name: io.github.olegsher-ds-2025/mcp-il-vehicles -->
+
 Israeli vehicle registry for AI agents: plate lookup, open recalls, model specs, new-car prices, licensed garages, EV chargers — live from data.gov.il.
 
 **מאגרי רכב: מספר רישוי, ריקולים, מפרט דגם, מחירון, מוסכים מורשים, עמדות טעינה**
@@ -30,21 +32,29 @@ government open data in plain language. No API key, no scraping — every call g
 
 ## Install
 
+No install needed with [uv](https://docs.astral.sh/uv/):
+
 ```bash
-pip install git+https://github.com/olegsher-ds-2025/mcp-il-vehicles
+uvx mcp-il-vehicles
 ```
 
 Claude Desktop / Claude Code (`.mcp.json`):
 
 ```json
-{ "mcpServers": { "il-vehicles": { "command": "mcp-il-vehicles" } } }
+{ "mcpServers": { "il-vehicles": { "command": "uvx", "args": ["mcp-il-vehicles"] } } }
 ```
+
+Or `pip install mcp-il-vehicles`, or from source: `pip install git+https://github.com/olegsher-ds-2025/mcp-il-vehicles`.
+
+Also listed in the official MCP Registry as `io.github.olegsher-ds-2025/mcp-il-vehicles`.
 
 Run over HTTP (for remote hosting):
 
 ```bash
 MCP_TRANSPORT=http PORT=8000 mcp-il-vehicles   # → http://localhost:8000/mcp
 ```
+
+Docker: `docker build -t mcp-il-vehicles . && docker run -p 8000:8000 mcp-il-vehicles`.
 
 Prefect Horizon entrypoint: `server.py:mcp`.
 

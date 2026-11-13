@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.olegsher-ds-2025/mcp-il-vehicles",
+  "title": "Israel Vehicle Registry",
+  "description": "Israeli vehicle registry for AI agents: plate lookup, open recalls, model specs, new-car prices, lic",
+  "repository": {
+    "url": "https://github.com/olegsher-ds-2025/mcp-il-vehicles",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-il-vehicles",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
