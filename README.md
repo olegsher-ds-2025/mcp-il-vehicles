@@ -78,7 +78,7 @@ pytest -m live    # hits data.gov.il
 ## Related
 
 Part of a family of Israeli public-data MCP servers by [Oleg Sher](https://linkedin.com/in/sheroleg):
-mcp-il-companies · mcp-il-vehicles · mcp-il-health · mcp-cbs-places · mcp-mavat.
+mcp-il-companies · mcp-il-vehicles · mcp-il-health · mcp-il-professionals · mcp-cbs-places · mcp-mavat.
 
 ## License
 
