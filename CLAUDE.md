@@ -9,6 +9,7 @@ Python 3.11 · FastMCP · httpx · pytest. No database: every tool queries data.
 - server.py — Prefect Horizon entrypoint (`server.py:mcp`); check with `fastmcp inspect server.py:mcp`
 - src/mcp_il_vehicles/server.py — tools + resource IDs (constants `R_*` at top)
 - src/mcp_il_vehicles/ckan.py — shared CKAN client (retries, User-Agent, `~`→`"` cleanup, `meta()` provenance). Keep identical across mcp-il-* repos.
+- src/mcp_il_vehicles/geo.py — OpenStreetMap Nominatim geocoder (≤1 req/s, in-memory cache, tiered fallback address→street→city centre). Override with NOMINATIM_URL / GEOCODER_USER_AGENT env vars.
 - tests/ — offline tests (monkeypatched `datastore_search`); `pytest -m live` for real calls
 
 ## Rules

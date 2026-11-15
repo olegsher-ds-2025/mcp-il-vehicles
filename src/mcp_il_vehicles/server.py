@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from datetime import date
 
 from fastmcp import FastMCP
 
 from . import __version__
 from .ckan import datastore_search, meta
+from .geo import geocode, haversine_km, reverse_city
 
 R_PRIVATE = "053cea08-09bc-40ec-8f7a-156f0677aff3"  # כלי רכב פרטיים ומסחריים (פעילים)
 R_PRIVATE_EXTRA = "0866573c-40cd-4ca8-91d2-9dd2d7a492e5"  # המשך: הנעה, עומס/מהירות צמיגים
@@ -21,6 +24,9 @@ R_MODELS = "142afde2-6228-49f9-8a29-9b6c3a0cbe40"  # תוצרים ודגמים W
 R_PRICES = "39f455bf-6db0-4926-859d-017f34eacbcb"  # יבואנים ומחירוני רכב חדש
 R_GARAGES = "bb68386a-a331-4bbc-b668-bba2766d517d"  # מוסכים ומכוני רישוי
 R_CHARGERS = "528482f2-d410-4d62-8b17-566ab23a1c52"  # עמדות טעינה לרכב חשמלי
+R_PERSONAL_IMPORT = "03adc637-b6fe-402b-9937-7c3d3afc9140"  # כלי רכב ביבוא אישי
+R_DISABLED_TAG = "c8b9f9c8-4612-4068-934f-d4acd2e3c06e"  # כלי רכב עם תג חניה לנכה
+R_EV_DISTRICT = "07421a4e-5b12-4444-9173-5ca297b31f79"  # כמות כלי רכב חשמליים לפי נפה
 
 DS = {
     "registry": "Ministry of Transport — vehicle registry",
@@ -29,6 +35,10 @@ DS = {
     "prices": "Ministry of Transport — importers & new-car price lists",
     "garages": "Ministry of Transport — licensed garages & test stations",
     "chargers": "Ministry of Energy — EV charging stations",
+    "import": "Ministry of Transport — personally imported vehicles",
+    "disabled": "Ministry of Transport — vehicles with disabled-parking permit",
+    "ev_district": "Ministry of Transport — electric vehicles by sub-district",
+    "osm": "OpenStreetMap Nominatim geocoding (© OpenStreetMap contributors, ODbL)",
 }
 
 mcp = FastMCP(
@@ -101,6 +111,16 @@ async def _find_plate(n: int) -> dict | None:
                 except Exception:  # noqa: BLE001
                     pass
             return {k: val for k, val in v.items() if val is not None}
+    try:  # personal imports are published in a separate registry
+        imp = await datastore_search(R_PERSONAL_IMPORT, filters={"mispar_rechev": n}, limit=1)
+    except Exception:  # noqa: BLE001
+        imp = {"records": []}
+    if imp["records"]:
+        r = imp["records"][0]
+        v = _registry(r, "personal import")
+        v["vin"] = r.get("shilda") or v.get("vin")
+        v["import_type"] = r.get("sug_yevu")
+        return {k: val for k, val in v.items() if val is not None}
     return None
 
 
@@ -218,6 +238,226 @@ async def ev_charging_stations(query: str, limit: int = 20) -> dict:
         for r in res["records"]
     ]
     return {"total": res["total"], "stations": rows, **meta(DS["chargers"])}
+
+
+def _yyyymmdd(v) -> str | None:
+    s = str(v or "")
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else (s or None)
+
+
+@mcp.tool
+async def disabled_parking_permit(plate: str) -> dict:
+    """Does a licence plate hold a disabled-parking permit (תג חניה לנכה)? Returns issue date and permit type code."""
+    n = _plate(plate)
+    res = await datastore_search(R_DISABLED_TAG, filters={"MISPAR RECHEV": n}, limit=5)
+    permits = [{"issued": _yyyymmdd(r.get("TAARICH HAFAKAT TAG")), "permit_type_code": r.get("SUG TAV")}
+               for r in res["records"]]
+    return {"plate": n, "has_permit": bool(permits), "permits": permits,
+            "note": "permit_type_code is published without a legend by the Ministry of Transport.",
+            **meta(DS["disabled"])}
+
+
+@mcp.tool
+async def personal_import_check(plate: str) -> dict:
+    """Was this vehicle brought in by personal import (יבוא אישי, new or used) rather than an official importer?
+    Personal-import cars can have different warranty, parts and resale considerations."""
+    n = _plate(plate)
+    res = await datastore_search(R_PERSONAL_IMPORT, filters={"mispar_rechev": n}, limit=1)
+    if not res["records"]:
+        return {"plate": n, "personal_import": False, **meta(DS["import"])}
+    r = res["records"][0]
+    return {"plate": n, "personal_import": True, "import_type": r.get("sug_yevu"), "make": r.get("tozeret_nm"),
+            "model_code": r.get("degem_nm"), "year": r.get("shnat_yitzur"), "country": r.get("tozeret_eretz_nm"),
+            "vin": r.get("shilda"), "fuel": r.get("sug_delek_nm"), "first_on_road": r.get("moed_aliya_lakvish"),
+            "last_test": r.get("mivchan_acharon_dt"), "license_valid_until": r.get("tokef_dt"), **meta(DS["import"])}
+
+
+@mcp.tool
+async def ev_adoption_by_year(from_year: int = 2015, to_year: int | None = None) -> dict:
+    """Time series of electric (BEV) and plug-in/hybrid share among active private & commercial vehicles,
+    grouped by year first on the road — a proxy for EV adoption in new registrations over time."""
+    to_year = to_year or date.today().year
+    years = list(range(max(1990, from_year), to_year + 1))[-15:]
+    sem = asyncio.Semaphore(6)
+
+    async def count(year: int, fuel: list[str] | None) -> int:
+        f: dict = {"moed_aliya_lakvish": [f"{year}-{m}" for m in range(1, 13)]}
+        if fuel:
+            f["sug_delek_nm"] = fuel
+        async with sem:
+            return (await datastore_search(R_PRIVATE, filters=f, limit=1))["total"]
+
+    jobs = [(y, k, fuel) for y in years for k, fuel in
+            (("total", None), ("bev", ["חשמל"]), ("hybrid", ["חשמל/בנזין", "חשמל/דיזל"]))]
+    counts = await asyncio.gather(*(count(y, fuel) for y, _, fuel in jobs))
+    table: dict[int, dict] = {y: {"year": y} for y in years}
+    for (y, k, _), c in zip(jobs, counts, strict=True):
+        table[y][k] = c
+    rows = []
+    for y in years:
+        t = table[y]
+        tot = t["total"] or 0
+        rows.append({**t, "bev_share_pct": round(100 * t["bev"] / tot, 1) if tot else None,
+                     "hybrid_share_pct": round(100 * t["hybrid"] / tot, 1) if tot else None})
+    return {"series": rows,
+            "method": "Counts of vehicles still active today, by year first on the road. Scrapped vehicles are not "
+                      "included, so early years are under-counted; recent years approximate new-registration share.",
+            **meta(DS["registry"])}
+
+
+@mcp.tool
+async def ev_by_district(ownership: str = "") -> dict:
+    """Current number of electric vehicles by district (מחוז) and sub-district (נפה), with each area's share
+    of the national EV fleet. Optional ownership filter, e.g. "פרטי", "חברה", "השכרה", "ליסינג"."""
+    res = await datastore_search(R_EV_DISTRICT, filters={"baalut": ownership} if ownership else None, limit=500)
+    total = sum(r.get("car_num") or 0 for r in res["records"]) or 1
+    districts: dict[str, dict] = {}
+    subs: dict[tuple, int] = {}
+    for r in res["records"]:
+        d, nafa, n = r.get("mahoz_nm") or "?", r.get("nafa_nm") or "?", r.get("car_num") or 0
+        districts.setdefault(d, {"district": d, "evs": 0})["evs"] += n
+        subs[(d, nafa)] = subs.get((d, nafa), 0) + n
+    out_d = sorted(districts.values(), key=lambda x: -x["evs"])
+    for x in out_d:
+        x["share_pct"] = round(100 * x["evs"] / total, 1)
+    out_s = sorted(({"district": d, "sub_district": s, "evs": n, "share_pct": round(100 * n / total, 1)}
+                    for (d, s), n in subs.items()), key=lambda x: -x["evs"])
+    return {"national_evs": total, "ownership_filter": ownership or "all", "by_district": out_d,
+            "by_sub_district": out_s,
+            "note": "Snapshot as currently published; the ministry does not publish a history for this table. "
+                    "See ev_adoption_by_year for a time series.", **meta(DS["ev_district"])}
+
+
+@mcp.tool
+async def find_garages_near(address: str = "", lat: float | None = None, lon: float | None = None,
+                            specialty: str = "", radius_km: float = 10.0, max_results: int = 10,
+                            extra_cities: list[str] | None = None) -> dict:
+    """Licensed garages nearest to an address or GPS point, with distance in km.
+
+    Args:
+        address: e.g. "ההסתדרות 50, בת ים" (or give lat/lon instead).
+        specialty: keyword such as "חשמל", "היברידי", "מכונאות", "פחחות", "צמיגים".
+        radius_km: keep garages within this distance.
+        extra_cities: neighbouring cities to include (Hebrew names as in the registry, e.g. ["חולון", "תל אביב -יפו"]).
+    Geocoding uses OpenStreetMap (≤1 request/s), so at most 25 garage addresses are located per call.
+    """
+    if lat is None or lon is None:
+        if not address:
+            raise ValueError("Provide address or lat/lon")
+        origin = await geocode(address)
+        if not origin:
+            return {"found": False, "message": f"Could not locate '{address}'.", **meta(DS["osm"])}
+        lat, lon = origin["lat"], origin["lon"]
+    city = await reverse_city(lat, lon)
+    cities = [c for c in [city, *(extra_cities or [])] if c]
+    if not cities:
+        return {"found": False, "message": "Could not determine the city for this point.", **meta(DS["osm"])}
+    batches = await asyncio.gather(*(datastore_search(R_GARAGES, filters={"yishuv": c}, q=specialty or None,
+                                                      limit=60) for c in cities))
+    garages = [r for b in batches for r in b["records"]]
+    located, skipped = [], 0
+    for r in garages[:25]:
+        street, town = (r.get("ktovet") or "").strip(), (r.get("yishuv") or "").strip()
+        pt, precision = None, None
+        if street and town:
+            pt, precision = await geocode(f"{street}, {town}"), "address"
+            if not pt:
+                bare = re.sub(r"\s*\d+[א-ת]?\s*$", "", street)
+                if bare and bare != street:
+                    pt, precision = await geocode(f"{bare}, {town}"), "street"
+        if not pt and town:
+            pt, precision = await geocode(town), "city_centre"
+        if not pt:
+            skipped += 1
+            continue
+        dist = haversine_km(lat, lon, pt["lat"], pt["lon"])
+        if dist <= radius_km:
+            located.append({"name": r.get("shem_mosah"), "garage_no": r.get("mispar_mosah"),
+                            "specialty": r.get("miktzoa"), "type": r.get("sug_mosah"),
+                            "address": ", ".join(x for x in (street, town) if x), "phone": r.get("telephone"),
+                            "distance_km": round(dist, 2), "location_precision": precision,
+                            "lat": round(pt["lat"], 5), "lon": round(pt["lon"], 5)})
+    located.sort(key=lambda x: (x["location_precision"] == "city_centre", x["distance_km"]))
+    return {"origin": {"lat": lat, "lon": lon, "city": city}, "cities_searched": cities,
+            "garages_in_registry": len(garages), "geocoded": min(len(garages), 25) - skipped,
+            "not_located": skipped + max(0, len(garages) - 25), "results": located[:max(1, min(max_results, 25))],
+            "note": "Straight-line distances. location_precision: address = exact, street = street only, "
+                    "city_centre = address unknown to OpenStreetMap (distance approximate, listed last).",
+            **meta([DS["garages"], DS["osm"]])}
+
+
+@mcp.tool
+async def used_car_report(plate: str) -> dict:
+    """One-call pre-purchase check for a used car: registry record, licence/test validity, open recalls,
+    personal import, disabled-parking permit, model safety/specs and the model's new list price — with flags."""
+    n = _plate(plate)
+    v = await _find_plate(n)
+    if not v:
+        return {"plate": n, "found": False, **meta(DS["registry"])}
+    recalls_t = vehicle_recalls(str(n))
+    import_t = personal_import_check(str(n))
+    tag_t = disabled_parking_permit(str(n))
+    specs_t = model_specs_for_plate(str(n))
+    recalls, imp, tag, specs = await asyncio.gather(recalls_t, import_t, tag_t, specs_t, return_exceptions=True)
+    price = None
+    if v.get("commercial_name") and v.get("year"):
+        try:
+            pr = await datastore_search(R_PRICES, q=str(v["commercial_name"]), filters={"shnat_yitzur": v["year"]}, limit=5)
+            price = [{"trim": r.get("degem_nm"), "price_ils": r.get("mehir"), "importer": r.get("shem_yevuan")}
+                     for r in pr["records"]] or None
+        except Exception:  # noqa: BLE001
+            price = None
+
+    flags, ok = [], []
+    today = date.today().isoformat()
+    if "inactive" in v.get("registry", ""):
+        flags.append(f"Vehicle is off the road / cancelled ({v.get('cancellation') or 'inactive registry'})")
+    if v.get("license_valid_until") and str(v["license_valid_until"]) < today:
+        flags.append(f"Annual licence expired on {v['license_valid_until']}")
+    elif v.get("license_valid_until"):
+        ok.append(f"Licence valid until {v['license_valid_until']}")
+    if isinstance(recalls, dict) and recalls.get("open_recalls"):
+        flags.append(f"{recalls['open_recalls']} open manufacturer recall(s) not performed")
+    elif isinstance(recalls, dict):
+        ok.append("No open recalls")
+    own = str(v.get("ownership") or "")
+    if any(k in own for k in ("השכרה", "ליסינג", "חברה")):
+        flags.append(f"Current ownership type: {own} (ex-rental/lease/company cars often have high mileage)")
+    if isinstance(imp, dict) and imp.get("personal_import"):
+        flags.append(f"Personal import ({imp.get('import_type')}) — check warranty, parts and insurance")
+    if isinstance(tag, dict) and tag.get("has_permit"):
+        flags.append("Vehicle holds a disabled-parking permit — it is tied to the holder and will not transfer")
+    return {
+        "plate": n, "found": True, "vehicle": v, "flags": flags, "positives": ok,
+        "recalls": recalls if isinstance(recalls, dict) else None,
+        "personal_import": imp if isinstance(imp, dict) else None,
+        "disabled_permit": tag if isinstance(tag, dict) else None,
+        "model_specs": (specs.get("specs") if isinstance(specs, dict) else None),
+        "new_list_price_for_model_year": price,
+        "not_covered": ["Liens/pledges (רשם המשכונות) — check before paying",
+                        "Ownership history count and mileage — Ministry of Transport vehicle history report",
+                        "Accident / insurance claims history — insurer databases",
+                        "Physical inspection by an independent test station (מכון בדיקה)"],
+        **meta([DS["registry"], DS["recall"], DS["import"], DS["disabled"], DS["models"], DS["prices"]]),
+    }
+
+
+@mcp.prompt
+def used_car_checklist(plate: str) -> str:
+    """Guided pre-purchase review of a used car in Israel, using all vehicle tools."""
+    return f"""You are helping me decide whether to buy the used car with Israeli licence plate {plate}.
+
+1. Call `used_car_report` with plate {plate}. Summarise the car in two lines (make, model, trim, year, fuel,
+   ownership type, first on road) and list every flag first, in plain language.
+2. If the report shows open recalls, explain what each fault is and that the seller/importer should fix it
+   before sale at no cost.
+3. Compare the model's safety equipment and safety score from `model_specs` with what a buyer should expect.
+4. Use `new_list_price_for_model_year` as context for depreciation (never present it as the market price).
+5. Call `find_garages_near` for my area (ask me for my address) to suggest a licensed test station or garage
+   for an independent inspection.
+6. Finish with a checklist of what the open data cannot confirm: liens (רשם המשכונות), number of previous
+   owners and mileage (vehicle history report), accident history, service book, test drive.
+Answer in the language I write in. Be factual and cite the data source for each claim."""
 
 
 @mcp.tool
