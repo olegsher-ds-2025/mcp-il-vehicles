@@ -7,6 +7,7 @@ import os
 
 from fastmcp import FastMCP
 
+from . import __version__
 from .ckan import datastore_search, meta
 
 R_PRIVATE = "053cea08-09bc-40ec-8f7a-156f0677aff3"  # כלי רכב פרטיים ומסחריים (פעילים)
@@ -32,6 +33,7 @@ DS = {
 
 mcp = FastMCP(
     "mcp-il-vehicles",
+    version=__version__,
     instructions=(
         "Israeli vehicle data. Start with vehicle_by_plate (licence plate digits only), then vehicle_recalls and "
         "model_specs_for_plate. Use find_garages for licensed garages by city/specialty. Data is Hebrew."

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-il-vehicles"
-version = "0.1.0"
+version = "0.1.1"
 description = "Israeli vehicle registry for AI agents: plate lookup, open recalls, model specs, new-car prices, licensed garages, EV chargers — live from data.gov.il"
 readme = "README.md"
 requires-python = ">=3.11"
