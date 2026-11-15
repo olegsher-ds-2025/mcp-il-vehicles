@@ -19,4 +19,5 @@
 - data.gov.il has no datastore_search_sql (404); time series built with list filters on moed_aliya_lakvish ('YYYY-M', not zero-padded)
 - EV-by-district table is a current snapshot only
 - Nominatim misses some industrial-zone streets → city-centre fallback flagged as location_precision=city_centre
+- GitHub Actions jobs declare explicit token permissions; the publish job needs id-token and attestations write, while test needs contents read
 - Next: publish v0.2.0 via GitHub release tag v0.2.0
