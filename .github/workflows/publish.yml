@@ -24,6 +24,7 @@ jobs:
     permissions:
       id-token: write   # PyPI trusted publishing + MCP Registry GitHub OIDC
       contents: read
+      attestations: write  # GitHub artifact attestations (public repos)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,6 +38,10 @@ jobs:
           SJ=$(python -c "import json;print(json.load(open('server.json'))['version'])")
           test "$TAG" = "$PY" && test "$TAG" = "$SJ" || { echo "tag=$TAG pyproject=$PY server.json=$SJ"; exit 1; }
       - run: pip install build && python -m build
+      - name: GitHub artifact attestation (build provenance)
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
       - name: Install mcp-publisher
         run: |
