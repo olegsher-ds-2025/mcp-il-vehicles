@@ -5,6 +5,9 @@ on:
     tags: ["v*", "[0-9]*"]   # v0.2.0 or 0.2.0
   workflow_dispatch:
 
+permissions:
+  contents: read   # least privilege by default; publish job elevates only what it needs
+
 jobs:
   test:
     runs-on: ubuntu-latest
